@@ -1,10 +1,8 @@
-package ci_simulate
+package main
 
 import (
-	"bufio"
 	"fmt"
 	"math/rand"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -13,80 +11,154 @@ import (
 )
 
 type jobInfo struct {
-	Id int
+	ID     int
 	Status bool
 }
 
+type Counter struct {
+	C int
+	Done bool
+}
+
 var (
-	builds = 100000
-	tests = 100
+	builders = 10000000
+	tasks = 1000000
+	testers  = 10000000
 )
 
 func main() {
 
 	var wg sync.WaitGroup
 
-	var buildsCh = make(chan jobInfo, builds)
-	var testersCh = make(chan jobInfo, tests)
+	var buildsCh = make(chan jobInfo)
+	var testersCh = make(chan jobInfo)
+	var deployCh = make(chan jobInfo)
+	var buildDone, testDone bool
+	var buildCounter, buildPassCounter, testCounter, testPassCounter, deployCounter int
+	var m sync.Mutex
 
-	for i := 0; i < builds; i++ {
-		wg.Add(1)
-		go buildRunner(&buildsCh, i, &wg)
+	for i := 0; i < builders; i++ {
+		go buildRunner(&buildsCh, &testersCh, &buildDone, &buildCounter, &buildPassCounter, &m)
 	}
 
-	for i := 0; i < tests; i++ {
-		wg.Add(1)
-		go testRunner(&testersCh, &wg)
+	for i := 0; i < testers; i++ {
+		go testRunner(&testersCh, &deployCh, &testDone, &testCounter, &testPassCounter, &m)
 	}
 
-	for i := range buildsCh {
-		if i.Status {
-			testersCh <- jobInfo{Id:i.Id, Status:false}
+	wg.Add(1)
+	go deployRunner(&deployCh, &wg, &deployCounter, &m)
+
+	for i := 0; i < tasks; i++ {
+		buildsCh <- jobInfo{ID: i, Status: false}
+	}
+
+	go func() {
+		wg.Add(1)
+		for {
+			if buildCounter == tasks {
+				close(buildsCh)
+				break
+			} else {
+				time.Sleep(time.Millisecond * 1)
+			}
 		}
-	}
-	close(buildsCh)
+		wg.Done()
+	}()
+
+
+	go func() {
+		wg.Add(1)
+		for {
+			if buildDone {
+				if buildPassCounter == testCounter {
+					close(testersCh)
+					break
+				} else {
+					time.Sleep(time.Millisecond * 1)
+				}
+			} else {
+				time.Sleep(time.Millisecond * 1)
+			}
+		}
+		wg.Done()
+	}()
+
+	go func() {
+		wg.Add(1)
+		for {
+			if testDone {
+				if testPassCounter == deployCounter {
+					close(deployCh)
+					break
+				} else {
+					time.Sleep(time.Millisecond * 1)
+				}
+			} else {
+				time.Sleep(time.Millisecond * 1)
+			}
+		}
+		wg.Done()
+	}()
+
 	wg.Wait()
+	
 }
 
-func buildRunner(buildChan *chan jobInfo, id int, wg *sync.WaitGroup) {
-	fmt.Println("...Running Build..." + strconv.Itoa(id))
-	time.Sleep(time.Second * time.Duration(rand.Intn(10)))
-	status := rand.Float64() * 1
-	if status < 0.5 {
-		log.Info("Job #" + strconv.Itoa(id) + ": BUILD FAILED!")
-		*buildChan <- jobInfo{Id:id, Status:false}
-	} else {
-		log.Info("Job #" + strconv.Itoa(id) + ": BUILD PASSED!")
-		*buildChan <- jobInfo{Id:id, Status:true}
-	}
-	wg.Done()
-}
-
-func testRunner(testerChan *chan jobInfo, wg *sync.WaitGroup) {
-	for i := range *testerChan {
-		fmt.Println("...Running Tests..." + strconv.Itoa(i.Id))
-		time.Sleep(time.Second * time.Duration(rand.Intn(10)))
+func buildRunner(buildChan, testerCh *chan jobInfo, buildDone *bool, buildCounter, buildPassCounter *int, m *sync.Mutex) {
+	for i := range *buildChan {
+		fmt.Println("...Running Build for job #" + strconv.Itoa(i.ID) + " ...")
+		time.Sleep(time.Second * 1)
 		status := rand.Float64() * 1
 		if status < 0.5 {
-			log.Info("Job #" + strconv.Itoa(i.Id) + ": BUILD FAILED!")
-			*buildChan <- false
+			log.Info("Job #" + strconv.Itoa(i.ID) + ": BUILD FAILED!")
 		} else {
-			log.Info("Job #" + strconv.Itoa(buildInf.buildId) + ": BUILD PASSED!")
-			*buildChan <- false
+			log.Info("Job #" + strconv.Itoa(i.ID) + ": BUILD PASSED!")
+			*testerCh <- jobInfo{ID: i.ID, Status: true}
+			m.Lock()
+			*buildPassCounter++
+			m.Unlock()
 		}
+		m.Lock()
+		*buildCounter++
+		m.Unlock()
 	}
-	wg.Done()
+	*buildDone = true
 }
 
-func deploy() {
-	fmt.Println("...Running Build..." + strconv.Itoa(buildInf.buildId))
-	time.Sleep(time.Second * time.Duration(rand.Intn(10)))
-	status := rand.Float64() * 1
-	if status < 0.5 {
-		log.Info("Job #" + strconv.Itoa(buildInf.buildId) + ": BUILD FAILED!")
-		*buildChan <- false
-	} else {
-		log.Info("Job #" + strconv.Itoa(buildInf.buildId) + ": BUILD PASSED!")
-		*buildChan <- false
+func testRunner(testerChan, deployCh *chan jobInfo, testDone *bool, testCounter, testPassCounter *int, m *sync.Mutex) {
+	for i := range *testerChan {
+		fmt.Println("...Running Tests for job #" + strconv.Itoa(i.ID) + " ...")
+		time.Sleep(time.Second * 1)
+		status := rand.Float64() * 1
+		if status < 0.5 {
+			log.Info("Job #" + strconv.Itoa(i.ID) + ": TESTS FAILED!")
+		} else {
+			log.Info("Job #" + strconv.Itoa(i.ID) + ": TESTS PASSED!")
+			*deployCh <- jobInfo{ID: i.ID, Status: true}
+			m.Lock()
+			*testPassCounter++
+			m.Unlock()
+		}
+		m.Lock()
+		*testCounter++
+		m.Unlock()
 	}
+	*testDone = true
+}
+
+func deployRunner(deployChan *chan jobInfo, wg *sync.WaitGroup, deployCounter *int, m *sync.Mutex) {
+	for i := range *deployChan {
+		fmt.Println("...Running Deploy for job #..." + strconv.Itoa(i.ID))
+		time.Sleep(time.Millisecond * 1)
+		status := rand.Float64() * 1
+		if status < 0.5 {
+			log.Info("Job #" + strconv.Itoa(i.ID) + ": DEPLOY FAILED!")
+		} else {
+			log.Info("Job #" + strconv.Itoa(i.ID) + ": DEPLOY PASSED!")
+		}
+		m.Lock()
+		*deployCounter++
+		m.Unlock()
+	}
+	wg.Done()
 }
