@@ -21,9 +21,9 @@ type Counter struct {
 }
 
 var (
-	builders = 10000000
+	builders = 10000
 	tasks = 1000000
-	testers  = 10000000
+	testers  = 10000
 )
 
 func main() {
